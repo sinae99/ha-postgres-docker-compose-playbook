@@ -1,0 +1,50 @@
+---
+- name: Ensure local PostgreSQL stack directory exists
+  file:
+    path: "{{ postgres_stack_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Render the PostgreSQL-only Compose stack
+  template:
+    src: docker-compose.yml.j2
+    dest: "{{ postgres_stack_dir }}/compose.yaml"
+    mode: "0644"
+
+- name: Validate the rendered Compose stack
+  command: docker compose config --quiet
+  args:
+    chdir: "{{ postgres_stack_dir }}"
+  changed_when: false
+
+- name: Start the pg_auto_failover monitor
+  command: docker compose up -d pg-monitor
+  args:
+    chdir: "{{ postgres_stack_dir }}"
+
+- name: Wait for the monitor PostgreSQL port
+  wait_for:
+    host: 127.0.0.1
+    port: "{{ pg_monitor_host_port }}"
+    timeout: 120
+
+- name: Trust all local test clients on the monitor
+  shell: |
+    set -e
+    docker compose exec -T -u postgres pg-monitor bash -lc '
+      FILE=/var/lib/postgres/pgaf/pg_hba.conf
+      LINE="host  all  all  0.0.0.0/0  trust"
+      grep -Fqx "$LINE" "$FILE" || echo "$LINE" >> "$FILE"
+    '
+  args:
+    chdir: "{{ postgres_stack_dir }}"
+
+- name: Reload monitor PostgreSQL configuration
+  command: docker compose exec -T -u postgres pg-monitor psql -d pg_auto_failover -c "select pg_reload_conf();"
+  args:
+    chdir: "{{ postgres_stack_dir }}"
+  register: monitor_reload
+  retries: 30
+  delay: 2
+  until: monitor_reload.rc == 0
+  changed_when: false

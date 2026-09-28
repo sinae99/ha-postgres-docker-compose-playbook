@@ -1,0 +1,19 @@
+---
+postgres_image: citusdata/pg_auto_failover:latest
+
+postgres_stack_dir: "{{ playbook_dir }}/.."
+
+pg_monitor_service: pg-monitor
+pg_monitor_host_port: 5500
+pg_monitor_dsn: "postgres://autoctl_node@pg-monitor:5432/pg_auto_failover?sslmode=disable"
+
+pg_node_services:
+  - pg-node1
+  - pg-node2
+  - pg-node3
+pg_node_host_ports:
+  - 5541
+  - 5542
+  - 5543
+
+app_database_name: appdb_utf8

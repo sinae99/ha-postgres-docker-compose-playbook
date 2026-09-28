@@ -1,0 +1,132 @@
+---
+- name: Deploy PostgreSQL monitor
+  hosts: pg_monitor
+  gather_facts: false
+  roles:
+    - pg_monitor
+
+- name: Verify monitor before adding nodes
+  hosts: pg_monitor
+  gather_facts: false
+  tasks:
+    - name: Show initial pg_auto_failover state
+      command: docker compose exec -T -u postgres pg-monitor pg_autoctl show state --pgdata /var/lib/postgres/pgaf
+      args:
+        chdir: "{{ postgres_stack_dir }}"
+      changed_when: false
+
+- name: Deploy PostgreSQL node 1
+  hosts: pg_node_vm1
+  gather_facts: false
+  roles:
+    - pg_node
+
+- name: Verify PostgreSQL state after node 1
+  hosts: pg_monitor
+  gather_facts: false
+  tasks:
+    - name: Show state after node 1
+      command: docker compose exec -T -u postgres pg-monitor pg_autoctl show state --pgdata /var/lib/postgres/pgaf
+      args:
+        chdir: "{{ postgres_stack_dir }}"
+      changed_when: false
+
+- name: Deploy PostgreSQL node 2
+  hosts: pg_node_vm2
+  gather_facts: false
+  roles:
+    - pg_node
+
+- name: Verify PostgreSQL state after node 2
+  hosts: pg_monitor
+  gather_facts: false
+  tasks:
+    - name: Show state after node 2
+      command: docker compose exec -T -u postgres pg-monitor pg_autoctl show state --pgdata /var/lib/postgres/pgaf
+      args:
+        chdir: "{{ postgres_stack_dir }}"
+      changed_when: false
+
+- name: Deploy PostgreSQL node 3
+  hosts: pg_node_vm3
+  gather_facts: false
+  roles:
+    - pg_node
+
+- name: Verify final PostgreSQL state
+  hosts: pg_monitor
+  gather_facts: false
+  tasks:
+    - name: Show final state
+      command: docker compose exec -T -u postgres pg-monitor pg_autoctl show state --pgdata /var/lib/postgres/pgaf
+      args:
+        chdir: "{{ postgres_stack_dir }}"
+      changed_when: false
+
+- name: Create appdb_utf8 on the current PostgreSQL primary
+  hosts: pg_monitor
+  gather_facts: false
+  tasks:
+    - name: Get pg_auto_failover state
+      command: docker compose exec -T -u postgres pg-monitor pg_autoctl show state --pgdata /var/lib/postgres/pgaf
+      args:
+        chdir: "{{ postgres_stack_dir }}"
+      register: pg_state
+      changed_when: false
+
+    - name: Check the PostgreSQL role on every node
+      command: >-
+        docker compose exec -T -u postgres {{ item }} psql -d postgres -tAc
+        "SELECT CASE WHEN pg_is_in_recovery() THEN 'standby' ELSE 'primary' END;"
+      args:
+        chdir: "{{ postgres_stack_dir }}"
+      loop: "{{ pg_node_services }}"
+      register: pg_node_roles
+      changed_when: false
+      failed_when: false
+
+    - name: Select the node that is currently primary
+      set_fact:
+        primary_container: "{{ item.item }}"
+      loop: "{{ pg_node_roles.results }}"
+      when:
+        - item.rc == 0
+        - (item.stdout | trim) == "primary"
+
+    - name: Refuse to run database initialization without a known primary
+      fail:
+        msg: "Could not detect a primary by checking pg_is_in_recovery() on: {{ pg_node_services | join(', ') }}"
+      when: primary_container | default('') not in pg_node_services
+
+    - name: Check whether appdb_utf8 exists
+      command: >-
+        docker compose exec -T -u postgres {{ primary_container }} psql -d postgres -tAc
+        "SELECT 1 FROM pg_database WHERE datname='{{ app_database_name }}';"
+      args:
+        chdir: "{{ postgres_stack_dir }}"
+      register: db_exists
+      changed_when: false
+
+    - name: Create appdb_utf8 if missing
+      command: >-
+        docker compose exec -T -u postgres {{ primary_container }} psql -d postgres -c
+        "CREATE DATABASE {{ app_database_name }} OWNER postgres TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C';"
+      args:
+        chdir: "{{ postgres_stack_dir }}"
+      when: (db_exists.stdout | trim) != "1"
+
+    - name: Enforce UTF-8 client encoding
+      command: >-
+        docker compose exec -T -u postgres {{ primary_container }} psql -d postgres -c "{{ item }}"
+      args:
+        chdir: "{{ postgres_stack_dir }}"
+      loop:
+        - "ALTER DATABASE {{ app_database_name }} SET client_encoding TO 'UTF8';"
+        - "ALTER ROLE postgres SET client_encoding TO 'UTF8';"
+      changed_when: false
+
+- name: Print final PostgreSQL HA report
+  hosts: pg_monitor
+  gather_facts: false
+  roles:
+    - report

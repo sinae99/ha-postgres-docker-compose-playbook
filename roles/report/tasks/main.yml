@@ -1,0 +1,23 @@
+---
+- name: Show local PostgreSQL containers
+  command: docker compose ps
+  args:
+    chdir: "{{ postgres_stack_dir }}"
+  register: compose_ps
+  changed_when: false
+
+- name: Show PostgreSQL container status
+  debug:
+    var: compose_ps.stdout_lines
+
+- name: Show final pg_auto_failover state
+  command: docker compose exec -T -u postgres pg-monitor pg_autoctl show state --pgdata /var/lib/postgres/pgaf
+  args:
+    chdir: "{{ postgres_stack_dir }}"
+  register: final_pg_state
+  changed_when: false
+
+- name: Print final PostgreSQL HA report
+  debug:
+    msg: "{{ final_pg_state.stdout }}"
+

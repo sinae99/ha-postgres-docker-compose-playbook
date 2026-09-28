@@ -1,0 +1,42 @@
+---
+- name: Set PostgreSQL node index from inventory order
+  set_fact:
+    pg_node_index: "{{ groups['pg_nodes'].index(inventory_hostname) }}"
+
+- name: Set PostgreSQL node service and host port
+  set_fact:
+    pg_node_service: "{{ pg_node_services[pg_node_index] }}"
+    pg_node_host_port: "{{ pg_node_host_ports[pg_node_index] }}"
+
+- name: Start this PostgreSQL node
+  command: docker compose up -d "{{ pg_node_service }}"
+  args:
+    chdir: "{{ postgres_stack_dir }}"
+
+- name: Wait for this PostgreSQL node to accept TCP connections
+  wait_for:
+    host: 127.0.0.1
+    port: "{{ pg_node_host_port }}"
+    timeout: 180
+
+- name: Trust all local test clients on this PostgreSQL node
+  shell: |
+    set -e
+    docker compose exec -T -u postgres {{ pg_node_service }} bash -lc '
+      FILE=/var/lib/postgres/pgaf/pg_hba.conf
+      LINE="host  all  all  0.0.0.0/0  trust"
+      grep -Fqx "$LINE" "$FILE" || echo "$LINE" >> "$FILE"
+    '
+  args:
+    chdir: "{{ postgres_stack_dir }}"
+
+- name: Reload this PostgreSQL node configuration
+  command: docker compose exec -T -u postgres "{{ pg_node_service }}" psql -d postgres -c "select pg_reload_conf();"
+  args:
+    chdir: "{{ postgres_stack_dir }}"
+  register: node_reload
+  retries: 30
+  delay: 2
+  until: node_reload.rc == 0
+  changed_when: false
+

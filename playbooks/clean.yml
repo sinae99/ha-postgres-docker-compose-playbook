@@ -1,0 +1,17 @@
+---
+- name: Stop the local PostgreSQL HA test
+  hosts: pg_monitor
+  gather_facts: false
+  tasks:
+    - name: Stop containers and keep database volumes
+      command: docker compose down --remove-orphans
+      args:
+        chdir: "{{ postgres_stack_dir }}"
+      tags: [clean]
+
+    - name: Stop containers and remove all database volumes
+      command: docker compose down --volumes --remove-orphans
+      args:
+        chdir: "{{ postgres_stack_dir }}"
+      tags: [nuke]
+
